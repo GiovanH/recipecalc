@@ -32,7 +32,9 @@ class Counter(collections.Counter):
                 assert count < 0
                 result[elem] = 0 - count
         return result
-    # todo mult
+
+    def __hash__(self):
+        return hash(str(self))
 
 
 def trycall(obj, fn):
@@ -69,6 +71,9 @@ class RecipeCalc():
 
     class Recipe(HackableFieldAbc):
         fields = ["consumes", "requires", "produces"]
+
+        def __repr__(self):
+            return f"<Recipe {self.consumes} w/ {self.requires} = {self.produces}>"
 
         @classmethod
         def fromdict(cls, data):
@@ -150,7 +155,7 @@ class RecipeCalc():
         def __str__(self):
             return f"<Use existing {self.produces}>"
 
-    class NoRecipeError(Exception):
+    class RecursiveRecipeError(Exception):
         pass
 
     def __init__(self, data={}):
@@ -162,41 +167,67 @@ class RecipeCalc():
             for d in data.get("recipes", {})
         ]
 
-    # @functools.lru_cache()
-    def genRecipes(self, target, stack=tuple(), inventory=None):
+    @functools.lru_cache()
+    def _genRecipes(self, target, target_count=1, stack=tuple(), inventory=None):
+        def stackprint(*a, **k):
+            print(" " * 2 * len(stack), *a, **k)
+
         if not inventory:
             inventory = Counter()
-        stackprint = lambda *a, **k: print(" " * 2*len(stack), *a, **k)
+
+        target_counter = Counter([target] * target_count)
+
         has_matched = False
-        stackprint("genRecipe", target)
+        stackprint("Generating crafting step for", target_counter)
+
         if target in inventory:
+            existing_count = inventory[target]
+            remaining_count = target_count - existing_count
             yield self.InventoryExistingCraftingStep(
-                produces=Counter([target]),
+                produces=Counter([target] * existing_count),
                 start_inventory=inventory
             )
-            return
+            if remaining_count == 0:
+                return  # Early exit
+            else:
+                target_count = remaining_count
         for recipe in self.recipes:
             try:
                 if target in recipe.produces:
-                    stackprint("matched", recipe)
-                    if any(target in r.consumes for r in stack):
+                    recipe_iterations = math.ceil(target_count / recipe.produces[target])
+                    stackprint("matched", recipe, "will need", recipe_iterations)
+                    if any(target in r2.produces and r2.produces[target] >= target_count for r2 in stack):
                         # Already trying to fufill this!
-                        stackprint("Found recursive recipe set")
+                        stackprint("Found recursive recipe set:")
+                        stackprint("Recipe", recipe, "produces an existing target item")
+                        stackprint("Target", target_counter, "in", [r2.produces for r2 in stack])
                         stackprint(stack, recipe)
-                        # yield self.AxiomaticCraftingStep(
-                        #     produces=Counter([target]),
-                        #     start_inventory=inventory
-                        # )
-                        continue
+                        raise self.RecursiveRecipeError((*stack, recipe))
+                    # Compute cost to produce all the requirements of the recipe
                     prereqs = []
                     prereqs_by_consumement = {}
-                    for consumement in recipe.consumes:
-                        need_count = recipe.consumes[consumement]
-                        # Need to flatten this to see our working inventory. Maybe look at "lowest common denominator" of all the different possible prereq cases?
-                        prereqs_by_consumement[consumement] = [
-                            r * math.ceil(need_count / r.produces[consumement])
-                            for r in self.genRecipes(consumement, stack=(*stack, recipe), inventory=inventory)
-                        ]
+                    try:
+                        for consumement in recipe.consumes:
+                            need_count = recipe.consumes[consumement]
+                            # Need to flatten this to see our working inventory.
+                            # Maybe look at "lowest common denominator" of all the different possible prereq cases?
+                            prereqs_by_consumement[consumement] = [
+                                r for r in
+                                self.genRecipes(
+                                    consumement,
+                                    target_count=need_count,
+                                    stack=(*stack, recipe),
+                                    inventory=inventory
+                                )
+                            ]
+                    except self.RecursiveRecipeError:
+                        stackprint("Prerequisites are recursive, skipping recipe", recipe)
+                        yield self.AxiomaticCraftingStep(
+                            produces=target_counter,
+                            start_inventory=inventory
+                        )
+                        continue
+
                     # All possible sets of crafting steps that satisify all the prerequisites.
                     # A: x, y
                     # B: z
@@ -205,21 +236,28 @@ class RecipeCalc():
                     has_matched = True
                     # Need to flatten this to see our working inventory. Maybe look at "lowest common denominator" of all the different possible prereq cases?
                     # print(prereqs)
-                    step_inventory = lowestCounterDenominator([[recipe.inventory for recipe in path] for path in prereqs])
+                    step_inventory = lowestCounterDenominator([
+                        [recipe.inventory for recipe in path]
+                        for path in prereqs
+                    ])
                     step_inventory = prereqs[0][0].inventory
+                    # Multiply step by needed count
                     yield self.CraftingStep(
                         recipe=recipe,
                         prereqs=prereqs,
                         start_inventory=step_inventory
-                    )
+                    ) * recipe_iterations
             except AssertionError:
                 continue
         if not has_matched:
-            stackprint("did not reach", target)
+            stackprint("did not reach", target, "yielding axiom")
             yield self.AxiomaticCraftingStep(
-                produces=Counter([target]),
+                produces=target_counter,
                 start_inventory=inventory
             )
+
+    def genRecipes(self, *args, **kwargs):
+        return list(self._genRecipes(*args, **kwargs))
 
 def test_basic_binary():
     rc = RecipeCalc()
@@ -285,6 +323,32 @@ def test_multi_path():
 - <Step Craft <1x road2> With <1x leads> = <1x rome>>
 - Inventory Counter({'rome': 1})""".strip()
 
+    rc = RecipeCalc()
+    yaml_data = """recipes:
+- consumes: ["w"]
+  requires: "craft"
+  produces: ["p", "p", "p", "p"]
+- consumes: ["p", "p", "p", "p", "p", "p", "p", "p"]
+  requires: "craft"
+  produces: ["chest"]
+- consumes: ["w", "w", "w", "w", "w", "w", "w", "w"]
+  requires: "craft"
+  produces: ["chest", "chest", "chest", "chest"]
+"""
+    rc.load(yaml.safe_load(yaml_data))
+
+    assert "\n---\n".join(path.render() for path in rc.genRecipes("chest", target_count=4)) == """
+- <Requires <8x w>>
+- <Step Craft <8x w> With <1x craft> = <32x p>>
+- Inventory Counter({'p': 32})
+- <Step Craft <32x p> With <1x craft> = <4x chest>>
+- Inventory Counter({'chest': 4})
+---
+- <Requires <8x w>>
+- <Step Craft <8x w> With <1x craft> = <4x chest>>
+- Inventory Counter({'chest': 4})
+""".strip()
+
 def test_recursive():
     rc = RecipeCalc()
     yaml_data = """recipes:
@@ -293,18 +357,28 @@ def test_recursive():
   produces: "B"
 - consumes: "B"
   requires: "rec"
+  produces: "C"
+- consumes: "B"
+  requires: "rec"
   produces: "A"
 """
     rc.load(yaml.safe_load(yaml_data))
 
-    generated = list(rc.genRecipes("A"))
-    out = "\n---\n".join(path.render() for path in generated)
+    # Creating B for C
+    #   Creating A for B
+    #     Found recipe to make A with B
+    #     Skipping that recipe because B is a target in the recipe stack
+
+    generated = rc.genRecipes("C")
     pprint.pprint([r.todict() for r in generated])
+    out = "\n---\n".join(path.render() for path in generated)
     print(out)
     assert out == """
-- <Requires <1x B>>
-- <Step Craft <1x B> With <1x rec> = <1x A>>
-- Inventory Counter({'A': 1})
+- <Requires <1x A>>
+- <Step Craft <1x A> With <1x rec> = <1x B>>
+- Inventory Counter({'B': 1})
+- <Step Craft <1x B> With <1x rec> = <1x C>>
+- Inventory Counter({'C': 1})
 """.strip()
 
 def test_rabbits():
@@ -313,13 +387,14 @@ def test_rabbits():
 - consumes: ["r", "r"]
   requires: "breed"
   produces: ["r", "r", "r"]
-- consumes: ["r", "r", "r", "r", "r"]
-  requires: "name"
-  produces: ["r5"]
 """
     rc.load(yaml.safe_load(yaml_data))
 
-    assert "\n---\n".join(path.render() for path in rc.genRecipes("r5")) == """
+    generated = rc.genRecipes("r", target_count=5)
+    pprint.pprint([r.todict() for r in generated])
+    out = "\n---\n".join(path.render() for path in generated)
+    print(out)
+    assert out == """
 - <Requires <4x r>>
 - <Step Craft <4x r> With <1x breed> = <6x r>>
 - Inventory Counter({'r': 6})
