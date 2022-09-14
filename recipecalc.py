@@ -13,9 +13,10 @@ class Counter(collections.Counter):
         return '<' + ', '.join(f"{f'{c}x ' if (c > 1 or True) else ''}{k}" for k, c in self.items()) + '>'
 
     def __mul__(self, i):
-        for k in self:
-            self[k] *= i
-        return self
+        ret = self.copy()
+        for k in ret:
+            ret[k] *= i
+        return ret
 
     def __sub__(self, other):
         ''' Subtract count, and throw an error if we try to subtract below zero.'''
@@ -56,7 +57,7 @@ class HackableFieldAbc():
         return f"<{type(self).__name__} {self.todict()!r}>"
 
 def lowestCounterDenominator(inventories):
-    # print(inventories)
+    print(inventories)
     # all_keys =
     return inventories[0]
 
@@ -167,7 +168,7 @@ class RecipeCalc():
             for d in data.get("recipes", {})
         ]
 
-    @functools.lru_cache()
+    # @functools.lru_cache()
     def _genRecipes(self, target, target_count=1, stack=tuple(), inventory=None):
         def stackprint(*a, **k):
             print(" " * 2 * len(stack), *a, **k)
@@ -178,7 +179,7 @@ class RecipeCalc():
         target_counter = Counter([target] * target_count)
 
         has_matched = False
-        stackprint("Generating crafting step for", target_counter)
+        stackprint("Generating crafting step for", target_counter, "inventory", inventory)
 
         if target in inventory:
             existing_count = inventory[target]
@@ -220,8 +221,10 @@ class RecipeCalc():
                                     inventory=inventory
                                 )
                             ]
+
                     except self.RecursiveRecipeError:
-                        stackprint("Prerequisites are recursive, skipping recipe", recipe)
+                        stackprint("Prerequisites are recursive")
+                        stackprint("skipping recipe", recipe, "in favor of axiom")
                         yield self.AxiomaticCraftingStep(
                             produces=target_counter,
                             start_inventory=inventory
@@ -233,15 +236,20 @@ class RecipeCalc():
                     # B: z
                     # [[x, z], [y, z]]
                     prereqs = [*itertools.product(*prereqs_by_consumement.values())]
-                    has_matched = True
                     # Need to flatten this to see our working inventory. Maybe look at "lowest common denominator" of all the different possible prereq cases?
                     # print(prereqs)
-                    step_inventory = lowestCounterDenominator([
-                        [recipe.inventory for recipe in path]
-                        for path in prereqs
-                    ])
-                    step_inventory = prereqs[0][0].inventory
+                    # step_inventory = lowestCounterDenominator([
+                    #     recipe.inventory for path in prereqs for recipe in path
+
+                    # ])
+                    # TODO: just pick first prereq path
+                    prereqs = [prereqs[0]]
+                    all_inventories = [recipe.inventory for recipe in prereqs[0]]
+                    step_inventory = sum(all_inventories, inventory)
+                    inventory += step_inventory
+                    stackprint("Adding results to inventory", step_inventory, inventory)
                     # Multiply step by needed count
+                    has_matched = True
                     yield self.CraftingStep(
                         recipe=recipe,
                         prereqs=prereqs,
@@ -292,11 +300,8 @@ def test_basic_binary():
 - <Requires <2x 00>>
 - <Step Craft <2x 00> With <1x inc> = <2x 01>>
 - Inventory Counter({'01': 2})
-- <Step Craft <2x 01> With <1x add> = <1x 10>>
-- Inventory Counter({'10': 1})
-- <Requires <2x 00>>
-- <Step Craft <2x 00> With <1x inc> = <2x 01>>
-- Inventory Counter({'01': 2})
+- <Step Craft <1x 01> With <1x add> = <1x 10>>
+- Inventory Counter({'10': 1, '01': 1})
 - <Step Craft <1x 10, 1x 01> With <1x and> = <1x 11>>
 - Inventory Counter({'11': 1})
 """.strip()
@@ -395,11 +400,13 @@ def test_rabbits():
     out = "\n---\n".join(path.render() for path in generated)
     print(out)
     assert out == """
-- <Requires <4x r>>
-- <Step Craft <4x r> With <1x breed> = <6x r>>
-- Inventory Counter({'r': 6})
-- <Step Craft <5x r> With <1x name> = <1x r5>>
-- Inventory Counter({'r': 1, 'r5': 1})
+- <Requires <2x r>>
+- <Step Craft <2x r> With <1x breed> = <3x r>>
+- Inventory Counter({'r': 3})
+- <Step Craft <2x r> With <1x breed> = <3x r>>
+- Inventory Counter({'r': 4})
+- <Step Craft <2x r> With <1x breed> = <3x r>>
+- Inventory Counter({'r': 5})
 """.strip()
 
 
@@ -449,7 +456,11 @@ def test_remainders():
 """
     rc.load(yaml.safe_load(yaml_data))
 
-    assert "\n---\n".join(path.render() for path in rc.genRecipes("remainder")) == """
+    generated = rc.genRecipes("remainder")
+    pprint.pprint([r.todict() for r in generated])
+    out = "\n---\n".join(path.render() for path in generated)
+    print(out)
+    assert out == """
 - <Requires <1x X>>
 - <Step Craft <2x X> With <1x split> = <2x x, 2x z>>
 - Inventory Counter({'x': 2, 'z': 2})
