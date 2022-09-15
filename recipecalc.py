@@ -18,14 +18,31 @@ class Counter(collections.Counter):
             ret[k] *= i
         return ret
 
-    def __sub__(self, other):
-        ''' Subtract count, and throw an error if we try to subtract below zero.'''
+    def __add__(self, other):
+        '''Add counts from two counters.
+        >>> Counter('abbb') + Counter('bcc')
+        Counter({'b': 4, 'c': 2, 'a': 1})
+        '''
         if not isinstance(other, Counter):
             return NotImplemented
-        result = Counter()
+        result = self.__class__()
+        for elem, count in self.items():
+            newcount = count + other[elem]
+            if newcount > 0:
+                result[elem] = newcount
+        for elem, count in other.items():
+            if elem not in self and count > 0:
+                result[elem] = count
+        return result
+
+    def __sub__(self, other):
+        ''' Subtract count, and throw an error if we try to subtract below zero.'''
+        if not isinstance(other, self.__class__):
+            return NotImplemented
+        result = self.__class__()
         for elem, count in self.items():
             newcount = count - other[elem]
-            assert newcount >= 0
+            assert newcount >= 0, f"{other} not a subset of {self}"
             if newcount > 0:
                 result[elem] = newcount
         for elem, count in other.items():
@@ -56,11 +73,6 @@ class HackableFieldAbc():
     def __repr__(self):
         return f"<{type(self).__name__} {self.todict()!r}>"
 
-def lowestCounterDenominator(inventories):
-    print(inventories)
-    # all_keys =
-    return inventories[0]
-
 class RecipeCalc():
     class Item():
         def __init__(self, name):
@@ -74,7 +86,7 @@ class RecipeCalc():
         fields = ["consumes", "requires", "produces"]
 
         def __repr__(self):
-            return f"<Recipe {self.consumes} w/ {self.requires} = {self.produces}>"
+            return f"<Recipe {self.produces} from {self.consumes} with {self.requires}>"
 
         @classmethod
         def fromdict(cls, data):
@@ -89,12 +101,12 @@ class RecipeCalc():
             self.produces = Counter(produces) if isinstance(produces, list) else Counter([produces])
 
     class CraftingStep(HackableFieldAbc):
-        fields = ["prereqs", "consumes", "requires", "produces", "inventory"]
+        fields = ["prereqs", "consumes", "requires", "produces", "start_inventory"]
 
-        def __init__(self, recipe, prereqs, start_inventory):
-            self.consumes = recipe.consumes
-            self.requires = recipe.requires
-            self.produces = recipe.produces
+        def __init__(self, consumes, requires, produces, prereqs, start_inventory):
+            self.consumes = consumes
+            self.requires = requires
+            self.produces = produces
             self.start_inventory = start_inventory
             self.prereqs = prereqs
             # for paths in self.prereqs:
@@ -102,35 +114,55 @@ class RecipeCalc():
             #         print(path.produces, "<=", self.consumes)
             # assert path.produces == self.consumes
 
+        @classmethod
+        def fromRecipe(cls, recipe, **kwargs):
+            return cls(consumes=recipe.consumes, requires=recipe.requires, produces=recipe.produces, **kwargs)
+
         @property
         def inventory(self):
             # Scale our modifications with __mul__ without scaling other inventory items
-            return self.start_inventory + self.produces - self.consumes
+            prereq_inventories = [prereq.inventory for prereq in self.prereqs]
+            ret = sum(prereq_inventories, self.start_inventory) + self.produces - self.consumes
+            # print(
+            #     self.start_inventory,
+            #     "+", [prereq.inventory for prereq in self.prereqs],
+            #     "+", self.produces,
+            #     "-", self.consumes,
+            #     "=", ret)
+            return ret
 
         def __eq__(self, other):
             return str(self) == str(other)
 
         def __mul__(self, i):
-            self.consumes *= i
-            self.produces *= i
-            self.prereqs = [
-                [r * i for r in path]
-                for path in self.prereqs
+            ret = self.__class__(
+                consumes=self.consumes,
+                requires=self.requires,
+                produces=self.produces,
+                prereqs=self.prereqs,
+                start_inventory=self.start_inventory
+            )
+            ret.consumes *= i
+            ret.produces *= i
+            ret.prereqs = [
+                req * i for req in self.prereqs
             ]
-            return self
+            # if i > 1:
+            print(self, "*", i, "=", ret)
+            return ret
 
         def __str__(self):
-            return f"<Step Craft {self.consumes} With {self.requires} = {self.produces}>"
+            return (f"<Step Craft {self.produces} from {self.consumes} with {self.requires} "
+                    f"| {sum([prereq.inventory for prereq in self.prereqs], self.start_inventory)} -> {self.inventory}>")
 
         def render(self, partial=False):
             ret = ''
-            best_prereq = self.prereqs[0] if self.prereqs else []
-            for r in best_prereq:
+            for r in self.prereqs:
                 # ret += f"{r.render(partial=True)}\n"
                 ret += f"{r.render()}\n"
             ret += f"- {str(self)}"
-            if partial is False and self.inventory:
-                ret += f"\n- Inventory {str(self.inventory)}"
+            # if partial is False and self.inventory:
+            #     ret += f"\n- Inventory {str(self.inventory)}"
             return ret
 
     class AxiomaticCraftingStep(CraftingStep):
@@ -140,6 +172,7 @@ class RecipeCalc():
             self.produces = produces
             self.consumes = Counter()
             self.start_inventory = start_inventory
+            self.prereqs = []
 
         def __mul__(self, i):
             self.produces *= i
@@ -150,7 +183,7 @@ class RecipeCalc():
             return f"- {str(self)}"
 
         def __str__(self):
-            return f"<Requires {self.produces}>"
+            return f"<Requires {self.produces} | {self.start_inventory} -> {self.inventory}>"
 
     class InventoryExistingCraftingStep(AxiomaticCraftingStep):
         def __str__(self):
@@ -193,7 +226,7 @@ class RecipeCalc():
         target_counter = Counter([target] * target_count)
 
         has_matched = False
-        stackprint("Generating crafting step for", target_counter, "inventory", inventory)
+        stackprint("Generating crafting step for", target_counter, "w/ starting inventory", inventory)
 
         if target in inventory:
             existing_count = inventory[target]
@@ -222,24 +255,19 @@ class RecipeCalc():
 
             # Compute cost to produce all the requirements of the recipe
             prereqs = []
-            prereqs_by_consumement = {}
+
             try:
-                for consumement in recipe.consumes:
-                    need_count = recipe.consumes[consumement]
-                    # Need to flatten this to see our working inventory.
-                    # Maybe look at "lowest common denominator" of all the different possible prereq cases?
-                    prereqs_by_consumement[consumement] = self.genRecipes(
+                for i, consumement in enumerate(recipe.consumes):
+                    stackprint("Consumement #", i, consumement, "x", recipe.consumes[consumement], "*", recipe_iterations)
+                    next_prereq = self.pickBestPath(self.genRecipes(
                         consumement,
-                        target_count=need_count,
+                        target_count=recipe.consumes[consumement],
                         stack=(*stack, recipe),
-                        inventory=inventory
-                    )
-                    # inventory_input = self.pickBestPath(prereqs_by_consumement[consumement]).inventory
-                    # stackprint("Setting inventory to resolved prereq", inventory_input)
-                    # inventory = inventory_input
-            except AssertionError:
-                print(prereqs_by_consumement)
-                raise
+                        inventory=sum([prereq.inventory for prereq in prereqs], inventory)
+                    ))
+                    stackprint("New peer inventory", next_prereq.inventory)
+                    # inventory += next_prereq.inventory
+                    prereqs.append(next_prereq)
             except self.RecursiveRecipeError:
                 stackprint("Prerequisites are recursive")
                 stackprint("skipping recipe", recipe, "in favor of axiom")
@@ -249,25 +277,27 @@ class RecipeCalc():
                 )
                 continue
 
-            # Collapse prereqs into paths
-            prereqs = [*itertools.product(*prereqs_by_consumement.values())]
-
-            # TODO: Update our inventory with the newly produced items in the prereqs.
-
             # Yield the CraftingStep for this recipe
             has_matched = True
-            yield self.CraftingStep(
+            stackprint("Starting inventory", inventory)
+            stackprint("Prereq inventories", [prereq.inventory for prereq in prereqs])
+            stackprint("Prereqs", prereqs)
+            step = self.CraftingStep.fromRecipe(
                 recipe=recipe,
                 prereqs=prereqs,
-                start_inventory=inventory
+                start_inventory=inventory,
             ) * recipe_iterations  # Multiply step by needed count
+            pprint.pprint(step.todict())
+            stackprint("Yielding step", step)
+            yield step
         if not has_matched:
             # There's no way to craft this item, ergo it's an input requirement.
-            stackprint("did not reach", target, "yielding axiom")
-            yield self.AxiomaticCraftingStep(
+            axiom = self.AxiomaticCraftingStep(
                 produces=target_counter,
                 start_inventory=inventory
             )
+            stackprint("did not reach", target, "yielding axiom", axiom)
+            yield axiom
 
     def genRecipes(self, *args, **kwargs):
         return list(self._genRecipes(*args, **kwargs))
@@ -287,19 +317,16 @@ def test_basic_binary():
 """
     rc.load(yaml.safe_load(yaml_data))
 
-    assert "\n---\n".join(path.render() for path in rc.genRecipes("00")) == "- <Requires <1x 00>>"
+    assert "\n---\n".join(path.render() for path in rc.genRecipes("00")) == "- <Requires <1x 00> | <> -> <1x 00>>"
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("01")) == """
-- <Requires <1x 00>>
-- <Step Craft <1x 00> With <1x inc> = <1x 01>>
-- Inventory Counter({'01': 1})""".strip()
+- <Requires <1x 00> | <> -> <1x 00>>
+- <Step Craft <1x 01> from <1x 00> with <1x inc> | <1x 00> -> <1x 01>>""".strip()
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("10")) == """
-- <Requires <2x 00>>
-- <Step Craft <2x 00> With <1x inc> = <2x 01>>
-- Inventory Counter({'01': 2})
-- <Step Craft <2x 01> With <1x add> = <1x 10>>
-- Inventory Counter({'10': 1})""".strip()
+- <Requires <2x 00> | <> -> <2x 00>>
+- <Step Craft <2x 01> from <2x 00> with <1x inc> | <2x 00> -> <2x 01>>
+- <Step Craft <1x 10> from <2x 01> with <1x add> | <2x 01> -> <1x 10>>""".strip()
 
 def test_long_binary():
     rc = RecipeCalc()
@@ -317,15 +344,11 @@ def test_long_binary():
     rc.load(yaml.safe_load(yaml_data))
     assert "\n---\n".join(path.render() for path in rc.genRecipes("11")) == """
 - <Requires <2x 00>>
-- <Step Craft <2x 00> With <1x inc> = <2x 01>>
-- Inventory Counter({'01': 2})
-- <Step Craft <2x 01> With <1x add> = <1x 10>>
-- Inventory Counter({'10': 1})
+- <Step Craft <2x 01> from <2x 00> with <1x inc> | <2x 01>
+- <Step Craft <1x 10> from <2x 01> with <1x add> | <1x 10>
 - <Requires <1x 00>>
-- <Step Craft <1x 00> With <1x inc> = <1x 01>>
-- Inventory Counter({'10': 1, '01': 1})
-- <Step Craft <1x 10, 1x 01> With <1x and> = <1x 11>>
-- Inventory Counter({'11': 1})
+- <Step Craft <1x 01> from <1x 00> with <1x inc> | <1x 10': 1, '01>
+- <Step Craft <1x 11> from <1x 10, 1x 01> with <1x and> | <1x 11>
 """.strip()
 
 
@@ -343,12 +366,10 @@ def test_multi_path():
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("rome")) == """
 - <Requires <1x road1>>
-- <Step Craft <1x road1> With <1x leads> = <1x rome>>
-- Inventory Counter({'rome': 1})
+- <Step Craft <1x rome> from <1x road1> with <1x leads> | <1x rome>
 ---
 - <Requires <1x road2>>
-- <Step Craft <1x road2> With <1x leads> = <1x rome>>
-- Inventory Counter({'rome': 1})""".strip()
+- <Step Craft <1x rome> from <1x road2> with <1x leads> | <1x rome>""".strip()
 
 def test_multi_path_minecraft():
     rc = RecipeCalc()
@@ -367,14 +388,11 @@ def test_multi_path_minecraft():
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("chest", target_count=4)) == """
 - <Requires <8x w>>
-- <Step Craft <8x w> With <1x craft> = <32x p>>
-- Inventory Counter({'p': 32})
-- <Step Craft <32x p> With <1x craft> = <4x chest>>
-- Inventory Counter({'chest': 4})
+- <Step Craft <32x p> from <8x w> with <1x craft> | <32x p>
+- <Step Craft <4x chest> from <32x p> with <1x craft> | <4x chest>
 ---
 - <Requires <8x w>>
-- <Step Craft <8x w> With <1x craft> = <4x chest>>
-- Inventory Counter({'chest': 4})
+- <Step Craft <4x chest> from <8x w> with <1x craft> | <4x chest>
 """.strip()
 
 def test_recursive():
@@ -403,10 +421,8 @@ def test_recursive():
     print(out)
     assert out == """
 - <Requires <1x A>>
-- <Step Craft <1x A> With <1x rec> = <1x B>>
-- Inventory Counter({'B': 1})
-- <Step Craft <1x B> With <1x rec> = <1x C>>
-- Inventory Counter({'C': 1})
+- <Step Craft <1x B> from <1x A> with <1x rec> | <1x B>
+- <Step Craft <1x C> from <1x B> with <1x rec> | <1x C>
 """.strip()
 
 def test_rabbits():
@@ -424,12 +440,9 @@ def test_rabbits():
     print(out)
     assert out == """
 - <Requires <2x r>>
-- <Step Craft <2x r> With <1x breed> = <3x r>>
-- Inventory Counter({'r': 3})
-- <Step Craft <2x r> With <1x breed> = <3x r>>
-- Inventory Counter({'r': 4})
-- <Step Craft <2x r> With <1x breed> = <3x r>>
-- Inventory Counter({'r': 5})
+- <Step Craft <3x r> from <2x r> with <1x breed> | <3x r>
+- <Step Craft <3x r> from <2x r> with <1x breed> | <4x r>
+- <Step Craft <3x r> from <2x r> with <1x breed> | <5x r>
 """.strip()
 
 
@@ -450,18 +463,14 @@ def test_minecraft_recursive():
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("chest")) == """
 - <Requires <2x w>>
-- <Step Craft <2x w> With <1x craft> = <8x p>>
-- Inventory Counter({'p': 8})
-- <Step Craft <8x p> With <1x craft> = <1x chest>>
-- Inventory Counter({'chest': 1})
+- <Step Craft <8x p> from <2x w> with <1x craft> | <8x p>
+- <Step Craft <1x chest> from <8x p> with <1x craft> | <1x chest>
 """.strip()
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("door")) == """
 - <Requires <2x w>>
-- <Step Craft <2x w> With <1x craft> = <8x p>>
-- Inventory Counter({'p': 8})
-- <Step Craft <6x p> With <1x craft> = <1x door>>
-- Inventory Counter({'p': 2, 'door': 1})
+- <Step Craft <8x p> from <2x w> with <1x craft> | <8x p>
+- <Step Craft <1x door> from <6x p> with <1x craft> | <1x p': 2, 'door>
 """.strip()
 
 def test_remainders():
@@ -485,13 +494,10 @@ def test_remainders():
     print(out)
     assert out == """
 - <Requires <1x X>>
-- <Step Craft <2x X> With <1x split> = <2x x, 2x z>>
-- Inventory Counter({'x': 2, 'z': 2})
+- <Step Craft <2x x, 2x z> from <2x X> with <1x split> | <2x x': 2, 'z>
 - <Requires <1x Y>>
-- <Step Craft <2x Y> With <1x split> = <2x y, 2x z>>
-- Inventory Counter({'x': 2, 'y': 2, 'z': 4})
-- <Step Craft <1x x, 1x y, 2x z> With <1x name> = <1x remainder>>
-- Inventory Counter({'x': 1, 'remainder': 1})
+- <Step Craft <2x y, 2x z> from <2x Y> with <1x split> | <4x x': 2, 'y': 2, 'z>
+- <Step Craft <1x remainder> from <1x x, 1x y, 2x z> with <1x name> | <1x x': 1, 'remainder>
 """.strip()
 
 
