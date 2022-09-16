@@ -7,33 +7,27 @@ import collections
 import math
 import itertools
 
+def return_subtype(*method_names):
+    def decorator(cls):
+        for name in method_names:
+            method = getattr(cls, name)
+            def wrap(*args):
+                return cls(method(*args))
+            setattr(cls, name, wrap)
+        return cls
+    return decorator
 
+
+@return_subtype('__add__')
 class Counter(collections.Counter):
     def __repr__(self):
-        return '<' + ', '.join(f"{f'{c}x ' if (c > 1 or True) else ''}{k}" for k, c in self.items()) + '>'
+        return '[' + ', '.join(f"{f'{c}x ' if (c > 1 or True) else ''}{k}" for k, c in self.items()) + ']'
 
     def __mul__(self, i):
         ret = self.copy()
         for k in ret:
             ret[k] *= i
         return ret
-
-    def __add__(self, other):
-        '''Add counts from two counters.
-        >>> Counter('abbb') + Counter('bcc')
-        Counter({'b': 4, 'c': 2, 'a': 1})
-        '''
-        if not isinstance(other, Counter):
-            return NotImplemented
-        result = self.__class__()
-        for elem, count in self.items():
-            newcount = count + other[elem]
-            if newcount > 0:
-                result[elem] = newcount
-        for elem, count in other.items():
-            if elem not in self and count > 0:
-                result[elem] = count
-        return result
 
     def __sub__(self, other):
         ''' Subtract count, and throw an error if we try to subtract below zero.'''
@@ -148,11 +142,11 @@ class RecipeCalc():
                 req * i for req in self.prereqs
             ]
             # if i > 1:
-            print(self, "*", i, "=", ret)
+            # print(self, "*", i, "=", ret)
             return ret
 
         def __str__(self):
-            return (f"<Step Craft {self.produces} from {self.consumes} with {self.requires} "
+            return (f"<CraftingStep {self.produces} from {self.consumes} with {self.requires} "
                     f"| {sum([prereq.inventory for prereq in self.prereqs], self.start_inventory)} -> {self.inventory}>")
 
         def render(self, partial=False):
@@ -280,14 +274,15 @@ class RecipeCalc():
             # Yield the CraftingStep for this recipe
             has_matched = True
             stackprint("Starting inventory", inventory)
-            stackprint("Prereq inventories", [prereq.inventory for prereq in prereqs])
-            stackprint("Prereqs", prereqs)
+            stackprint("Total working inventory", [prereq.inventory for prereq in prereqs], sum([prereq.inventory for prereq in prereqs], inventory))
+            # stackprint("Prereq inventories", [prereq.inventory for prereq in prereqs])
+            # stackprint("Prereqs", prereqs)
             step = self.CraftingStep.fromRecipe(
                 recipe=recipe,
                 prereqs=prereqs,
-                start_inventory=inventory,
+                start_inventory=Counter(),  # Our starting inventory is already in the prereqs
             ) * recipe_iterations  # Multiply step by needed count
-            pprint.pprint(step.todict())
+            # pprint.pprint(step.todict())
             stackprint("Yielding step", step)
             yield step
         if not has_matched:
@@ -317,16 +312,16 @@ def test_basic_binary():
 """
     rc.load(yaml.safe_load(yaml_data))
 
-    assert "\n---\n".join(path.render() for path in rc.genRecipes("00")) == "- <Requires <1x 00> | <> -> <1x 00>>"
+    assert "\n---\n".join(path.render() for path in rc.genRecipes("00")) == "- <Requires [1x 00] | [] -> [1x 00]>"
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("01")) == """
-- <Requires <1x 00> | <> -> <1x 00>>
-- <Step Craft <1x 01> from <1x 00> with <1x inc> | <1x 00> -> <1x 01>>""".strip()
+- <Requires [1x 00] | [] -> [1x 00]>
+- <CraftingStep [1x 01] from [1x 00] with [1x inc] | [1x 00] -> [1x 01]>""".strip()
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("10")) == """
-- <Requires <2x 00> | <> -> <2x 00>>
-- <Step Craft <2x 01> from <2x 00> with <1x inc> | <2x 00> -> <2x 01>>
-- <Step Craft <1x 10> from <2x 01> with <1x add> | <2x 01> -> <1x 10>>""".strip()
+- <Requires [2x 00] | [] -> [2x 00]>
+- <CraftingStep [2x 01] from [2x 00] with [1x inc] | [2x 00] -> [2x 01]>
+- <CraftingStep [1x 10] from [2x 01] with [1x add] | [2x 01] -> [1x 10]>""".strip()
 
 def test_long_binary():
     rc = RecipeCalc()
@@ -343,12 +338,12 @@ def test_long_binary():
 """
     rc.load(yaml.safe_load(yaml_data))
     assert "\n---\n".join(path.render() for path in rc.genRecipes("11")) == """
-- <Requires <2x 00>>
-- <Step Craft <2x 01> from <2x 00> with <1x inc> | <2x 01>
-- <Step Craft <1x 10> from <2x 01> with <1x add> | <1x 10>
-- <Requires <1x 00>>
-- <Step Craft <1x 01> from <1x 00> with <1x inc> | <1x 10': 1, '01>
-- <Step Craft <1x 11> from <1x 10, 1x 01> with <1x and> | <1x 11>
+- <Requires [2x 00] | [] -> [2x 00]>
+- <CraftingStep [2x 01] from [2x 00] with [1x inc] | [2x 00] -> [2x 01]>
+- <CraftingStep [1x 10] from [2x 01] with [1x add] | [2x 01] -> [1x 10]>
+- <Requires [1x 00] | [] -> [1x 00]>
+- <CraftingStep [1x 01] from [1x 00] with [1x inc] | [1x 00] -> [1x 01]>
+- <CraftingStep [1x 11] from [1x 10, 1x 01] with [1x and] | [1x 10, 1x 01] -> [1x 11]>
 """.strip()
 
 
@@ -365,11 +360,11 @@ def test_multi_path():
     rc.load(yaml.safe_load(yaml_data))
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("rome")) == """
-- <Requires <1x road1>>
-- <Step Craft <1x rome> from <1x road1> with <1x leads> | <1x rome>
+- <Requires [1x road1]>
+- <CraftingStep [1x rome] from [1x road1] with [1x leads] | [1x rome]
 ---
-- <Requires <1x road2>>
-- <Step Craft <1x rome> from <1x road2> with <1x leads> | <1x rome>""".strip()
+- <Requires [1x road2]>
+- <CraftingStep [1x rome] from [1x road2] with [1x leads] | [1x rome]""".strip()
 
 def test_multi_path_minecraft():
     rc = RecipeCalc()
@@ -387,12 +382,12 @@ def test_multi_path_minecraft():
     rc.load(yaml.safe_load(yaml_data))
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("chest", target_count=4)) == """
-- <Requires <8x w>>
-- <Step Craft <32x p> from <8x w> with <1x craft> | <32x p>
-- <Step Craft <4x chest> from <32x p> with <1x craft> | <4x chest>
+- <Requires [8x w]>
+- <CraftingStep [32x p] from [8x w] with [1x craft] | [32x p]
+- <CraftingStep [4x chest] from [32x p] with [1x craft] | [4x chest]
 ---
-- <Requires <8x w>>
-- <Step Craft <4x chest> from <8x w> with <1x craft> | <4x chest>
+- <Requires [8x w]>
+- <CraftingStep [4x chest] from [8x w] with [1x craft] | [4x chest]
 """.strip()
 
 def test_recursive():
@@ -420,9 +415,9 @@ def test_recursive():
     out = "\n---\n".join(path.render() for path in generated)
     print(out)
     assert out == """
-- <Requires <1x A>>
-- <Step Craft <1x B> from <1x A> with <1x rec> | <1x B>
-- <Step Craft <1x C> from <1x B> with <1x rec> | <1x C>
+- <Requires [1x A]>
+- <CraftingStep [1x B] from [1x A] with [1x rec] | [1x B]
+- <CraftingStep [1x C] from [1x B] with [1x rec] | [1x C]
 """.strip()
 
 def test_rabbits():
@@ -439,10 +434,10 @@ def test_rabbits():
     out = "\n---\n".join(path.render() for path in generated)
     print(out)
     assert out == """
-- <Requires <2x r>>
-- <Step Craft <3x r> from <2x r> with <1x breed> | <3x r>
-- <Step Craft <3x r> from <2x r> with <1x breed> | <4x r>
-- <Step Craft <3x r> from <2x r> with <1x breed> | <5x r>
+- <Requires [2x r]>
+- <CraftingStep [3x r] from [2x r] with [1x breed] | [3x r]
+- <CraftingStep [3x r] from [2x r] with [1x breed] | [4x r]
+- <CraftingStep [3x r] from [2x r] with [1x breed] | [5x r]
 """.strip()
 
 
@@ -462,15 +457,15 @@ def test_minecraft_recursive():
     rc.load(yaml.safe_load(yaml_data))
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("chest")) == """
-- <Requires <2x w>>
-- <Step Craft <8x p> from <2x w> with <1x craft> | <8x p>
-- <Step Craft <1x chest> from <8x p> with <1x craft> | <1x chest>
+- <Requires [2x w]>
+- <CraftingStep [8x p] from [2x w] with [1x craft] | [8x p]
+- <CraftingStep [1x chest] from [8x p] with [1x craft] | [1x chest]
 """.strip()
 
     assert "\n---\n".join(path.render() for path in rc.genRecipes("door")) == """
-- <Requires <2x w>>
-- <Step Craft <8x p> from <2x w> with <1x craft> | <8x p>
-- <Step Craft <1x door> from <6x p> with <1x craft> | <1x p': 2, 'door>
+- <Requires [2x w]>
+- <CraftingStep [8x p] from [2x w] with [1x craft] | [8x p]
+- <CraftingStep [1x door] from [6x p] with [1x craft] | [1x p': 2, 'door]
 """.strip()
 
 def test_remainders():
@@ -493,11 +488,11 @@ def test_remainders():
     out = "\n---\n".join(path.render() for path in generated)
     print(out)
     assert out == """
-- <Requires <1x X>>
-- <Step Craft <2x x, 2x z> from <2x X> with <1x split> | <2x x': 2, 'z>
-- <Requires <1x Y>>
-- <Step Craft <2x y, 2x z> from <2x Y> with <1x split> | <4x x': 2, 'y': 2, 'z>
-- <Step Craft <1x remainder> from <1x x, 1x y, 2x z> with <1x name> | <1x x': 1, 'remainder>
+- <Requires [1x X]>
+- <CraftingStep [2x x, 2x z] from [2x X] with [1x split] | [2x x, 2x z]
+- <Requires [1x Y]>
+- <CraftingStep [2x y, 2x z] from [2x Y] with [1x split] | [4x x': 2, 'y': 2, 'z]
+- <CraftingStep [1x remainder] from [1x x, 1x y, 2x z] with [1x name] | [1x x': 1, 'remainder]
 """.strip()
 
 
