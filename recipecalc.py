@@ -2,15 +2,17 @@
 
 import yaml
 import pprint
-import functools
 import collections
 import math
+
+import functools
 import itertools
 
 def return_subtype(*method_names):
     def decorator(cls):
         for name in method_names:
             method = getattr(cls, name)
+
             def wrap(*args):
                 return cls(method(*args))
             setattr(cls, name, wrap)
@@ -233,6 +235,9 @@ class RecipeCalc():
                 return  # Early exit
             else:
                 target_count = remaining_count
+        else:
+            stackprint("Target", target, "not in inventory", inventory, ", must craft")
+
         for recipe in filter(lambda r: target in r.produces, self.recipes):
             # How many times do we need to craft this recipe to get sufficient output?
             recipe_iterations = math.ceil(target_count / recipe.produces[target])
@@ -250,9 +255,13 @@ class RecipeCalc():
             # Compute cost to produce all the requirements of the recipe
             prereqs = []
 
+            # TODO: Pull remainder products from peer inventories to use as prerequisites if available
+            # inventory=inventory obviously prevents this, because prereq outputs only exist in prereqs
+            # inventory=sum([prereq.inventory for prereq in prereqs], inventory) causes incorrect side effects and item duplication
+
             try:
                 for i, consumement in enumerate(recipe.consumes):
-                    stackprint("Consumement #", i, consumement, "x", recipe.consumes[consumement], "*", recipe_iterations)
+                    stackprint("Consumement #", i, ':', consumement, "*", recipe.consumes[consumement], "*", recipe_iterations)
                     next_prereq = self.pickBestPath(self.genRecipes(
                         consumement,
                         target_count=recipe.consumes[consumement],
@@ -489,10 +498,10 @@ def test_remainders():
     print(out)
     assert out == """
 - <Requires [1x X] | [] -> [1x X]>
-- <CraftingStep [2x x, 2x z] from [2x X] with [1x split] | [2x X] -> [2x x, 2x z]>
+- <CraftingStep [1x x, 1x z] from [1x X] with [1x split] | [1x X] -> [1x x, 1x z]>
 - <Requires [1x Y] | [] -> [1x Y]>
-- <CraftingStep [2x y, 2x z] from [2x Y] with [1x split] | [2x Y] -> [2x y, 2x z]>
-- <CraftingStep [1x remainder] from [1x x, 1x y, 2x z] with [1x name] | [3x x, 4x z, 1x y] -> [2x x, 2x z, 1x remainder]>
+- <CraftingStep [1x y, 1x z] from [1x Y] with [1x split] | [1x Y] -> [1x y, 1x z]>
+- <CraftingStep [1x remainder] from [1x x, 1x y, 2x z] with [1x name] | [1x x, 2x z, 1x y] -> [1x remainder]>
 """.strip()
 
 
