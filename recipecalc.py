@@ -8,6 +8,8 @@ import math
 import functools
 import itertools
 
+import typing
+
 def return_subtype(*method_names):
     def decorator(cls):
         for name in method_names:
@@ -51,7 +53,7 @@ class Counter(collections.Counter):
         return hash(str(self))
 
 
-def trycall(obj, fn):
+def trycall(obj, fn: str):
     if isinstance(obj, list):
         return [trycall(o2, fn) for o2 in obj]
     elif hasattr(obj, fn):
@@ -61,7 +63,7 @@ def trycall(obj, fn):
 
 
 class HackableFieldAbc():
-    fields = []
+    fields: list[str] = []
 
     def todict(self):
         return {key: trycall(getattr(self, key), 'todict') for key in self.fields}
@@ -71,27 +73,24 @@ class HackableFieldAbc():
 
 class RecipeCalc():
     class Item():
-        def __init__(self, name):
+        def __init__(self: typing.Self, name: str) -> None:
             self.name = name
 
-        def __repr__(self):
+        def __repr__(self: typing.Self) -> str:
             props = {"name": self.name}
             return f"<{type(self).__name__} {props!r}>"
 
     class Recipe(HackableFieldAbc):
         fields = ["consumes", "requires", "produces"]
 
-        def __repr__(self):
+        def __repr__(self) -> str:
             return f"<Recipe {self.produces} from {self.consumes} with {self.requires}>"
 
         @classmethod
-        def fromdict(cls, data):
+        def fromdict(cls, data) -> typing.Self:
             return cls(**{key: data.get(key, []) for key in cls.fields})
 
         def __init__(self, consumes, requires, produces):
-            # self.consumes = consumes if isinstance(consumes, list) else [consumes]
-            # self.requires = requires if isinstance(requires, list) else [requires]
-            # self.produces = produces if isinstance(produces, list) else [produces]
             self.consumes = Counter(consumes) if isinstance(consumes, list) else Counter([consumes])
             self.requires = Counter(requires) if isinstance(requires, list) else Counter([requires])
             self.produces = Counter(produces) if isinstance(produces, list) else Counter([produces])
@@ -105,26 +104,17 @@ class RecipeCalc():
             self.produces = produces
             self.start_inventory = start_inventory
             self.prereqs = prereqs
-            # for paths in self.prereqs:
-            #     for path in paths:
-            #         print(path.produces, "<=", self.consumes)
-            # assert path.produces == self.consumes
 
         @classmethod
-        def fromRecipe(cls, recipe, **kwargs):
+        def fromRecipe(cls, recipe, **kwargs) -> typing.Self:
             return cls(consumes=recipe.consumes, requires=recipe.requires, produces=recipe.produces, **kwargs)
 
         @property
-        def inventory(self):
+        def inventory(self) -> list[Counter]:
+            """The inventory after applying this step."""
             # Scale our modifications with __mul__ without scaling other inventory items
             prereq_inventories = [prereq.inventory for prereq in self.prereqs]
             ret = sum(prereq_inventories, self.start_inventory) + self.produces - self.consumes
-            # print(
-            #     self.start_inventory,
-            #     "+", [prereq.inventory for prereq in self.prereqs],
-            #     "+", self.produces,
-            #     "-", self.consumes,
-            #     "=", ret)
             return ret
 
         def __eq__(self, other):
@@ -140,11 +130,11 @@ class RecipeCalc():
             )
             ret.consumes *= i
             ret.produces *= i
+            # Catalysts NOT scaled
             ret.prereqs = [
                 req * i for req in self.prereqs
             ]
-            # if i > 1:
-            # print(self, "*", i, "=", ret)
+
             return ret
 
         def __str__(self):
@@ -154,11 +144,8 @@ class RecipeCalc():
         def render(self, partial=False):
             ret = ''
             for r in self.prereqs:
-                # ret += f"{r.render(partial=True)}\n"
                 ret += f"{r.render()}\n"
             ret += f"- {str(self)}"
-            # if partial is False and self.inventory:
-            #     ret += f"\n- Inventory {str(self.inventory)}"
             return ret
 
     class AxiomaticCraftingStep(CraftingStep):
@@ -198,6 +185,7 @@ class RecipeCalc():
         ]
 
     def pickBestPath(self, paths):
+        # TODO
         return paths[0]
 
     # @functools.lru_cache()
@@ -266,7 +254,7 @@ class RecipeCalc():
                         consumement,
                         target_count=recipe.consumes[consumement],
                         stack=(*stack, recipe),
-                        inventory=inventory # sum([prereq.inventory for prereq in prereqs], inventory)
+                        inventory=inventory  # sum([prereq.inventory for prereq in prereqs], inventory)
                     ))
                     stackprint("New peer inventory", next_prereq.inventory)
                     # inventory += next_prereq.inventory
@@ -284,14 +272,12 @@ class RecipeCalc():
             has_matched = True
             stackprint("Starting inventory", inventory)
             stackprint("Total working inventory", [prereq.inventory for prereq in prereqs], sum([prereq.inventory for prereq in prereqs], inventory))
-            # stackprint("Prereq inventories", [prereq.inventory for prereq in prereqs])
-            # stackprint("Prereqs", prereqs)
+
             step = self.CraftingStep.fromRecipe(
                 recipe=recipe,
                 prereqs=prereqs,
                 # start_inventory=Counter(),  # Our starting inventory is already in the prereqs
             ) * recipe_iterations  # Multiply step by needed count
-            # pprint.pprint(step.todict())
             stackprint("Yielding step", step)
             yield step
         if not has_matched:
@@ -506,8 +492,8 @@ def test_remainders():
 
 
 if __name__ == "__main__":
-    test_basic_binary()
-    test_recursive()
+    # test_basic_binary()
+    # test_recursive()
     test_rabbits()
-    test_minecraft_recursive()
-    test_remainders()
+    # test_minecraft_recursive()
+    # test_remainders()
